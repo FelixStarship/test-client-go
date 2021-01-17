@@ -1,34 +1,23 @@
-/*
-Copyright 2016 The Kubernetes Authors.
 
-Licensed under the Apache License, Version 2.0 (the "License");
-you may not use this file except in compliance with the License.
-You may obtain a copy of the License at
-
-    http://www.apache.org/licenses/LICENSE-2.0
-
-Unless required by applicable law or agreed to in writing, software
-distributed under the License is distributed on an "AS IS" BASIS,
-WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-See the License for the specific language governing permissions and
-limitations under the License.
-*/
-
-// Note: the example only works with the code within the same release/branch.
 package main
 
 import (
-
-	"flag"
+	"bytes"
 	"fmt"
-	"os"
-	"path/filepath"
-	"time"
-
-	"k8s.io/apimachinery/pkg/api/errors"
+	"io/ioutil"
+	"k8s.io/apimachinery/pkg/api/meta"
 	metav1 "k8s.io/apimachinery/pkg/apis/meta/v1"
+	"k8s.io/apimachinery/pkg/apis/meta/v1/unstructured"
+	"k8s.io/apimachinery/pkg/runtime"
+	"k8s.io/apimachinery/pkg/runtime/serializer/yaml"
+	yamlutil "k8s.io/apimachinery/pkg/util/yaml"
+	"k8s.io/client-go/dynamic"
 	"k8s.io/client-go/kubernetes"
+	"k8s.io/client-go/restmapper"
 	"k8s.io/client-go/tools/clientcmd"
+	"log"
+	"os"
+
 	//
 	// Uncomment to load all auth plugins
 	// _ "k8s.io/client-go/plugin/pkg/client/auth"
@@ -41,51 +30,72 @@ import (
 )
 
 func main() {
-	var kubeconfig *string
-	if home := homeDir(); home != "" {
-		kubeconfig = flag.String("kubeconfig", filepath.Join("config", "config-bak.yaml"), "(optional) absolute path to the kubeconfig file")
-	} else {
-		kubeconfig = flag.String("kubeconfig", "", "absolute path to the kubeconfig file")
-	}
-	flag.Parse()
 
-	// use the current context in kubeconfig
-	config, err := clientcmd.BuildConfigFromFlags("", *kubeconfig)
+	nameSpace := "demo01"
+	k8sConfig, err := clientcmd.BuildConfigFromFlags("", "config/config-bak.yaml")  // 使用 kubectl 默认配置 ~/.kube/config
 	if err != nil {
-		panic(err.Error())
+		fmt.Printf("%v",err)
+		return
 	}
 
-	// create the clientset
-	clientset, err := kubernetes.NewForConfig(config)
+	// 创建一个k8s客户端
+	clientSet, err := kubernetes.NewForConfig(k8sConfig)
 	if err != nil {
-		panic(err.Error())
+		fmt.Printf("%v",err)
+		return
 	}
+	dd, err := dynamic.NewForConfig(k8sConfig)
+	if err != nil {
+		log.Fatal(err)
+	}
+
+	filebytes, err := ioutil.ReadFile("config/kube_config_cluster.yml")
+	if err != nil {
+		fmt.Printf("%v\n", err)
+	}
+
+	decoder := yamlutil.NewYAMLOrJSONDecoder(bytes.NewReader(filebytes), 100)
 	for {
-		pods, err := clientset.CoreV1().Pods("").List(metav1.ListOptions{})
+		var rawObj runtime.RawExtension
+		if err = decoder.Decode(&rawObj); err != nil {
+			break
+		}
+
+		obj, gvk, err := yaml.NewDecodingSerializer(unstructured.UnstructuredJSONScheme).Decode(rawObj.Raw, nil, nil)
+		unstructuredMap, err := runtime.DefaultUnstructuredConverter.ToUnstructured(obj)
 		if err != nil {
-			panic(err.Error())
+			log.Fatal(err)
 		}
-		fmt.Printf("There are %d pods in the cluster\n", len(pods.Items))
 
-		// Examples for error handling:
-		// - Use helper functions like e.g. errors.IsNotFound()
-		// - And/or cast to StatusError and use its properties like e.g. ErrStatus.Message
-		namespace := "default"
+		unstructuredObj := &unstructured.Unstructured{Object: unstructuredMap}
 
-		pod := "myapp-backend-pod-559ff5c66-fvm9b"
-		_, err = clientset.CoreV1().Pods(namespace).Get(pod, metav1.GetOptions{})
-		if errors.IsNotFound(err) {
-			fmt.Printf("Pod %s in namespace %s not found\n", pod, namespace)
-		} else if statusError, isStatus := err.(*errors.StatusError); isStatus {
-			fmt.Printf("Error getting pod %s in namespace %s: %v\n",
-				pod, namespace, statusError.ErrStatus.Message)
-		} else if err != nil {
-			panic(err.Error())
+		gr, err := restmapper.GetAPIGroupResources(clientSet.Discovery())
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		mapper := restmapper.NewDiscoveryRESTMapper(gr)
+		mapping, err := mapper.RESTMapping(gvk.GroupKind(), gvk.Version)
+		if err != nil {
+			log.Fatal(err)
+		}
+
+		var dri dynamic.ResourceInterface
+		if mapping.Scope.Name() == meta.RESTScopeNameNamespace {
+			if unstructuredObj.GetNamespace() == "" {
+				unstructuredObj.SetNamespace(nameSpace)
+			}
+			dri = dd.Resource(mapping.Resource).Namespace(unstructuredObj.GetNamespace())
 		} else {
-			fmt.Printf("Found pod %s in namespace %s\n", pod, namespace)
+			dri = dd.Resource(mapping.Resource)
 		}
 
-		time.Sleep(10 * time.Second)
+		obj2, err := dri.Create(unstructuredObj, metav1.CreateOptions{})
+		if  err != nil {
+			log.Fatal(err)
+		}
+
+		fmt.Printf("%s/%s created", obj2.GetKind(), obj2.GetName())
 	}
 }
 
@@ -95,3 +105,38 @@ func homeDir() string {
 	}
 	return os.Getenv("USERPROFILE") // windows
 }
+
+//func newDeployment() *appsv1.Deployment {
+//	labels := map[string]string{
+//		"app":        "nginx",
+//		"controller": foo.Name,
+//	}
+//	return &appsv1.Deployment{
+//		ObjectMeta: metav1.ObjectMeta{
+//			Name:      foo.Spec.DeploymentName,
+//			Namespace: foo.Namespace,
+//			OwnerReferences: []metav1.OwnerReference{
+//				*metav1.NewControllerRef(foo, samplev1alpha1.SchemeGroupVersion.WithKind("Foo")),
+//			},
+//		},
+//		Spec: appsv1.DeploymentSpec{
+//			Replicas: foo.Spec.Replicas,
+//			Selector: &metav1.LabelSelector{
+//				MatchLabels: labels,
+//			},
+//			Template: corev1.PodTemplateSpec{
+//				ObjectMeta: metav1.ObjectMeta{
+//					Labels: labels,
+//				},
+//				Spec: corev1.PodSpec{
+//					Containers: []corev1.Container{
+//						{
+//							Name:  "nginx",
+//							Image: "nginx:latest",
+//						},
+//					},
+//				},
+//			},
+//		},
+//	}
+//}

@@ -4,7 +4,6 @@ go 1.15
 
 require (
 	github.com/imdario/mergo v0.3.11 // indirect
-	github.com/jakecoffman/cron v0.0.0-20190106200828-7e2009c226a5
 	github.com/robfig/cron v1.2.0
 	golang.org/x/time v0.0.0-20200630173020-3af7569d3a1e // indirect
 	k8s.io/apimachinery v0.0.0-20190817020851-f2f3a405f61d

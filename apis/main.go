@@ -1,17 +1,15 @@
 package main
 
 import (
-	"github.com/jakecoffman/cron"
-	//"github.com/robfig/cron"
+	"github.com/robfig/cron"
 	"log"
 )
 
 func main() {
 	log.Println("Starting...")
 	c := cron.New()
-	c.AddFunc("*/5 * * * * SAT,SUN", print5, "cron")
+	c.AddFunc("*/5 * * * * SAT,SUN", print5)
 	c.Start()
-	c.RemoveJob("cron")
 	//http.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 	//
 	//	c := cron.New()
